@@ -1,11 +1,13 @@
 import random
 import argparse
+import string
+import urllib.parse
 from datetime import datetime, timedelta
 
 METHODS = ['GET', 'POST']
 URLS = ['/index.html', '/about', '/contact', '/login', '/dashboard']
 STATUS_CODES = [200, 301, 404, 500]
-USER_AGENTS = ['Mozilla/5.0', 'curl/7.68.0', 'sqlmap/1.4.6']
+# USER_AGENTS = ['Mozilla/5.0', 'curl/7.68.0', 'sqlmap/1.4.6']
 
 def random_ip():
     return '.'.join(str(random.randint(1, 255)) for _ in range(4))
@@ -14,30 +16,22 @@ def random_timestamp(start, offset_mins=60):
     random_time = start + timedelta(seconds=random.randint(0, offset_mins * 60))
     return random_time.strftime('%d/%b/%Y:%H:%M:%S -0500')
 
-def generate_log_line(timestamp):
-    ip = random_ip()
-    method = random.choice(METHODS)
-    url = random.choice(URLS)
-    status_code = random.choice(STATUS_CODES)
+def generate_log_line(ip: str, timestamp: str, method: str, url: str, status_code: int):
     size = random.randint(200, 5000)
     return f'{ip} - - [{timestamp}] "{method} {url} HTTP/1.1" {status_code} {size}'
 
-def generate_brute_force_logs(ip, start_time, attempts=20):
-    lines = []
-    for _ in range(attempts):
-        timestamp = random_timestamp(start_time, 1)
-        line = f'{ip} - - [{timestamp}] "POST /login HTTP/1.1" 401 {random.randint(200, 400)}'
-        lines.append(line)
-    return lines
+def generate_bruteforce_log_line(ip: str, method: str, path: str, params: dict[str, str], status_code: int, timestamp: str):
+    url = f'{path}?{urllib.parse.urlencode(params)}'
+    return f'{ip} - - [{timestamp}] "{method} {url} HTTP/1.1" {status_code} {random.randint(200, 400)}'
 
-def generate_bot_traffic(ip, start_time, hits=10):
-    lines = []
-    for _ in range(hits):
-        timestamp = random_timestamp(start_time, 10)
-        url = f"/admin.php?id={random.randint(1, 100)} OR 1=1"
-        line = f'{ip} - - [{timestamp}] "GET {url} HTTP/1.1" 200 {random.randint(300, 1000)}'
-        lines.append(line)
-    return lines
+def generate_bot_log_line(ip: str, method: str, path: str, params: dict[str, str], status_code: int, timestamp: str):
+    url = f'{path}?{urllib.parse.urlencode(params)}'
+    return f'{ip} - - [{timestamp}] "{method} {url} HTTP/1.1" {status_code} {random.randint(200, 400)}'
+
+def generate_random_string(len: int):
+    chars = string.ascii_lowercase
+    rand_str = ''.join(random.choice(chars) for i in range(len))
+    return rand_str
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='A script that generates fake Apache server log files.')
@@ -47,26 +41,72 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
+    paths = [
+        { 'method': 'GET', 'path': '/', 'status_codes': [200] },
+        { 'method': 'GET', 'path': '/about', 'status_codes': [200] },
+        { 'method': 'GET', 'path': '/contact', 'status_codes': [200] },
+        { 'method': 'GET', 'path': '/login', 'status_codes': [200] },
+        {
+            'method': 'GET',
+            'path': '/users',
+            'params': [
+                { 'key': 'id' }
+            ],
+            'status_codes': [200, 404]
+        },
+        {
+            'method': 'POST',
+            'path': '/login',
+            'params': [
+                { 'key': 'username' },
+                { 'key': 'password' }
+            ],
+            'status_codes': [200, 401]
+        },
+        { 'method': 'GET', 'path': '/dashboard', 'status_codes': [200, 401] },
+    ]
+
     now = datetime.now()
+    init_session = {
+        'request_count': 0,
+        'max_requests': 10,
+        'ip': None,
+        'bruteforce': False,
+        'bot': False
+    }
+    current_session = init_session
     with open('access_log.txt', 'w') as f:
-        for _ in range(args.count):
-            timestamp = random_timestamp(now)
-            log_line = generate_log_line(timestamp)
-            f.write(log_line + '\n')
+        for i in range(args.count):
+            # handle session ip address
+            current_ip = current_session.get('ip')
+            if current_ip is None:
+                ip = random_ip()
+                current_session['ip'] = ip
 
-        bf_count = 20
-        bot_count = 10
+            # decide bruteforce or bot traffic
+            if args.bruteforce:
+                current_session['bruteforce'] = random.choice([True, False])
+            if args.bot and current_session['bruteforce'] is not True:
+                current_session['bot'] = random.choice([True, False])
 
-        # generate brute force logs
-        if args.bruteforce:
-            bad_ip = random_ip()
-            brute_logs = generate_brute_force_logs(bad_ip, now, bf_count)
-            for line in brute_logs:
-                f.write(line + '\n')
+            # STOPPED HERE: continue building on logic
+            rand_path = paths[random.randint(0, len(paths) - 1)]
+            rand_sqlis = [' OR 1=1']
 
-        # generate bot traffic
-        if args.bot:
-            bot_ip = random_ip()
-            bot_logs = generate_bot_traffic(bot_ip, now, bot_count)
-            for line in bot_logs:
-                f.write(line + '\n')
+            if rand_path['method'] == 'POST' and rand_path['path'] == '/login':
+                params = {}
+                for param in rand_path['params']:
+                    params[param['key']] = generate_random_string(8)
+                line = generate_bruteforce_log_line(current_session['ip'], rand_path['method'], rand_path['path'], params, random.choice(rand_path['status_codes']), random_timestamp(now, 1))
+            if rand_path['method'] == 'GET' and rand_path['path'] == '/users':
+                params = {}
+                for param in rand_path['params']:
+                    if param['key'] == 'id':
+                        params['id'] = f'{random.randint(1, 100)} {random.choice(rand_sqlis)}'
+                line = generate_bot_log_line(current_session['ip'], rand_path['method'], rand_path['path'], params, random.choice(rand_path['status_codes']), random_timestamp(now, 5))
+                        
+
+            # start new session upon limit hit
+            current_session['request_count'] += 1
+            if current_session['request_count'] == current_session['max_requests']:
+                current_session = init_session
